@@ -7,16 +7,18 @@ using System.Threading.Tasks;
 using System.Text.RegularExpressions;
 
 namespace PYcheck
-{
+{    
     public class CPYCheck
     {
         private const string BLANK = " ";
         private const string NON_CHAR_PATTERN = "[^A-Z|a-z|0-9]";
         private const string CHAR_PATTERN = "[a-z]";
+        private const string DIGITAL_PATTERN = "[0-9]";
         private const string DEFAULT_DICT_NAME = "pinyin_dataset.txt";
         private Dictionary<char, List<string>> data_set;
-        private List<string> word_list; // 存储拼音分词后的结果
-        private BKTree<string> bk_tree; 
+        private List<string> preWord_list; // 存储前向匹配拼音分词后的结果
+        private List<string> sufWord_list; // 存储后向匹配拼音分词后的结果
+        private BKTree<string> bk_tree;        
 
         /// <summary>
         /// 
@@ -25,19 +27,13 @@ namespace PYcheck
         public CPYCheck(string nameDict_path = null)
         {            
             data_set = new Dictionary<char, List<string>>();
-            bk_tree = new BKTree<string>("yue");
-            word_list = new List<string>();
+            bk_tree = new BKTree<string>("yue");            
+            preWord_list = new List<string>();
+            sufWord_list = new List<string>();
 
             if (File.Exists(nameDict_path))
             {
-                DateTime beforDT = System.DateTime.Now;
-
-                CreateDataSet(nameDict_path);
-                //CreatePYDataSet(nameDict_path);
-
-                DateTime afterDT = System.DateTime.Now;
-                TimeSpan ts = afterDT.Subtract(beforDT);
-                Console.WriteLine("CreateDataSet spend {0} ms", ts.TotalMilliseconds); 
+                CreateDataSet(nameDict_path);   
             }
             else
             {
@@ -76,8 +72,8 @@ namespace PYcheck
         /// <param name="name_str">待检测拼音</param>
         /// <returns></returns>
         public List<string> NameCheck(string name_str)
-        {
-            string pname = null;            
+        {            
+            List<string> names = new List<string>();
             Regex rgx = new Regex(NON_CHAR_PATTERN);
 
             //用空格替换所有非字母或数字字符
@@ -86,27 +82,64 @@ namespace PYcheck
             name_str = name_str.Trim();
            // pname = name_str;
             name_str = name_str.ToLower();
-            //认为姓名最少由两个字母组成
-            if (name_str.Length < 2)
-                return null;
-
-            string[] name_list = name_str.Split(' ');
-            List<string> names = new List<string>();
-
-            if (name_list.Length > 1)
+            
+            string name_temp = name_str.Replace(" ", "");
+            if (NameFilter(name_temp) == true)
             {
-                names = GetCorrectName(name_list);
-            }
-            else
-            {
-                names = GetCorrectName(name_str);
-                if(names.Count == 0)
+                string[] name_list = name_str.Split(' ');
+
+                if (name_list.Length > 1)
                 {
-                    names.Add(name_str);
+                    names = GetCorrectName(name_list);
+                }
+                else
+                {
+                    names = GetCorrectName(name_str);
+                    if (names.Count == 0)
+                    {
+                        names.Add(name_str);
+                    }
                 }
             }
-
             return names;
+        }
+
+        private void ClearWordList()
+        {
+            preWord_list.Clear();
+            sufWord_list.Clear();
+        }
+
+        /// <summary>
+        /// 纠错前先判断是否是拼音，若分词后至少有一项符合拼音规则，则返回True
+        /// </summary>
+        /// <param name="name">检测字符串</param>
+        /// <returns></returns>
+        private bool NameFilter(string name)
+        {
+            bool res = false;
+            List<string> pre_list = PrePYSplit(name);
+            List<string> suf_list = SufPYSplit(name);
+            HashSet<string> hash_list = new HashSet<string>(pre_list);
+            hash_list.UnionWith(suf_list);
+            foreach (string word in hash_list)
+            {
+                res |= WordTest(word);
+            }
+            ClearWordList();
+            return res;
+        }
+
+        private bool IsRightName(string name)
+        {
+            bool res = true;
+            List<string> pre_list = PrePYSplit(name);
+            foreach (string word in pre_list)
+            {
+                res &= WordTest(word);
+            }
+            this.preWord_list.Clear();
+            return res;
         }
 
         /// <summary>
@@ -116,7 +149,15 @@ namespace PYcheck
         /// <returns></returns>
         private List<string> GetCorrectName(string name)
         {
-            List<string> correct_pname = new List<string>();            
+            HashSet<string> correct_pname = new HashSet<string>();      
+            
+            if(IsRightName(name))
+            {
+                //本身就正确，不需纠正
+                correct_pname.Add(name);
+                return correct_pname.ToList();
+            }
+                 
             Regex rgx = new Regex(CHAR_PATTERN);
             for (int index = 0; index < name.Length; index++ )
             {                
@@ -153,15 +194,19 @@ namespace PYcheck
                                 //修正后缀匹配到的结果
                                 new_name = name.Substring(0, index) + correct_word[0].ToString() + name.Substring(index + 1);
                             }
-
+                            else if(correct_word[0] == name[index])
+                            {
+                                //修正插入操作匹配的结果
+                                new_name = name.Substring(0, index) + correct_word + name.Substring(index + 1);
+                            }
                             //拼音规则检测
-                            List<string> wordSplit = PYSplit(new_name);
+                            List<string> wordSplit = PrePYSplit(new_name);
                             bool res = true;
                             if (wordSplit != null)
                             {
                                 foreach (string word in wordSplit)
                                     res = res && WordTest(word);
-                                this.word_list.Clear();
+                                this.preWord_list.Clear();
                                 if (res == true)
                                 {
                                     correct_pname.Add(new_name);
@@ -171,7 +216,7 @@ namespace PYcheck
                     }
                 }
             }
-            return correct_pname;
+            return correct_pname.ToList();
         }
 
         /// <summary>
@@ -211,13 +256,15 @@ namespace PYcheck
             for(int i = 0; i < name_list.Length; i++)
             {
                 bool is_normal = WordTest(name_list[i]);
-                if (!is_normal)
+                if (!is_normal && name_list[i].Length > 1)
                 {
                     //拼写纠错
-                    HashSet<string> correct_list = bk_tree.Search(name_list[i], 1);
-                    correct_dict[i] = correct_list.ToList();
+                    //HashSet<string> correct_list = bk_tree.Search(name_list[i], 1);
+                    List<string> correct_list = GetCorrectName(name_list[i]);
+                    if(correct_list.Count > 0)
+                        correct_dict[i] = correct_list.ToList();
                 }
-                else
+                else if (name_list[i].Length > 1)
                 {
                     correct_dict[i] = new List<string>{name_list[i]};
                 }
@@ -229,60 +276,104 @@ namespace PYcheck
             return correct_pname;
         }
 
-        public void GetCombination(Dictionary<int, List<string>> correct_dict, int key, ref string name, ref List<string> name_list)
+        private void GetCombination(Dictionary<int, List<string>> correct_dict, int key, ref string name, ref List<string> name_list)
         {
-            string name_copy = name;
-            for (int index = 0; index < correct_dict[key].Count; index++)
+            try
             {
-                name += " " + correct_dict[key][index];
-                if (correct_dict.ContainsKey(key + 1) == true)
+                string name_copy = name;
+                for (int index = 0; index < correct_dict[key].Count; index++)
                 {
-                    GetCombination(correct_dict, key + 1, ref name, ref name_list);
-                    name = name_copy;
+                    name += " " + correct_dict[key][index];
+                    if (correct_dict.ContainsKey(key + 1) == true)
+                    {
+                        GetCombination(correct_dict, key + 1, ref name, ref name_list);
+                        name = name_copy;
+                    }
+                    else
+                    {
+                        //名字最多4个字，3个空格
+                        if (Regex.Matches(name.Trim(), @"[\t ]").Count < 4)
+                        {
+                            name_list.Add(name.Trim());
+                            name = name_copy;
+                        }
+                    }
                 }
-                else
-                {
-                    name_list.Add(name.Trim());
-                    name = name_copy;                    
-                }
+                return;
             }
-            return;
+            catch(Exception ex)
+            {
+                return;
+            }
         }
     
         // 拼音分词,前向最大匹配法算法
         // 返回分词后的拼音数组
-        public List<string> PYSplit(string py_str)
+        private List<string> PrePYSplit(string py_str)
         {           
             const int MAX_WORD_LEN = 6; // 单词的最大长度     
             bool flag = false;       
             string s2 = py_str.Length > MAX_WORD_LEN ? py_str.Substring(0, MAX_WORD_LEN) : py_str;
             try
             {
-                List<string> word_list = this.data_set[s2[0]];
-
                 for (int index = s2.Length; index > -1; index--)
                 {
-                    if (word_list.Contains(s2.Substring(0, index)))
+                    if (this.data_set[s2[0]].Contains(s2.Substring(0, index)))
                     {
-                        this.word_list.Add(s2.Substring(0, index));
+                        this.preWord_list.Add(s2.Substring(0, index));
                         flag = true;
                         if (index < py_str.Length)
                         {
-                            this.PYSplit(py_str.Substring(index, py_str.Length - index));
+                            this.PrePYSplit(py_str.Substring(index, py_str.Length - index));
                         }
-                        return this.word_list;
+                        return this.preWord_list;
                     }
                 }
                 if (flag == false)
-                    this.word_list.Add(py_str);
-                return this.word_list;
+                    this.preWord_list.Add(py_str);
+                return this.preWord_list;
             }
             catch(Exception ex)
             {
-                this.word_list.Add(py_str);
-                return this.word_list;
+                this.preWord_list.Add(py_str);
+                return this.preWord_list;
             }           
-        }        
+        }
+
+        // 拼音分词,后向最大匹配法算法
+        // 返回分词后的拼音数组
+        private List<string> SufPYSplit(string py_str)
+        {
+            const int MAX_WORD_LEN = 6; // 单词的最大长度     
+            bool flag = false;
+            string s2 = py_str.Length > MAX_WORD_LEN ? py_str.Substring(py_str.Length - MAX_WORD_LEN + 1) : py_str;            
+
+            for (int index = 0; index < s2.Length; index++)
+            {
+                try
+                {
+                    if (this.data_set[s2[index]].Contains(s2.Substring(index)))
+                    {
+                        this.sufWord_list.Add(s2.Substring(index));
+                        flag = true;
+                        if (index > 0)
+                        {
+                            int sub_length = py_str.Length > MAX_WORD_LEN ? py_str.Length - MAX_WORD_LEN + 1 + index : index;
+                            this.SufPYSplit(py_str.Substring(0, sub_length));
+                        }
+                        return this.sufWord_list;
+                    }
+                }
+                catch(KeyNotFoundException ex)
+                {
+                    continue;
+                }
+            }
+            if (flag == false)
+                this.sufWord_list.Add(py_str);
+            return this.sufWord_list;
+
+        }
 
         private bool WordTest(string word)
         {
